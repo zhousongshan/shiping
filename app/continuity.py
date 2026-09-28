@@ -2,6 +2,15 @@
 from .production_schema import context_version, file_hash, fingerprint
 from .unit_planner import unit
 
+def dependency_ids(spec):
+    return list(dict.fromkeys([*spec.get('depends_on',[]),*spec.get('identity_depends_on',[])]))
+
+
+def reference_frame(spec,dependency,review):
+    identity_only=dependency in spec.get('identity_depends_on',[]) and dependency not in spec.get('depends_on',[])
+    field='identity_frame' if identity_only else 'end_frame'
+    return review.get(field),review.get(field+'_sha256')
+
 def accepted(job, root, unit_id, visited=None):
     visited = set(visited or ())
     if str(unit_id) in visited:
@@ -23,11 +32,11 @@ def validate_inputs(job, root, spec, args):
     for asset in job['subject_spec']['inputs']:
         if file_hash(root/asset['path']) != asset['sha256']:
             raise ValueError('用户素材已变化，需要重新理解主体与规划')
-    for dependency in spec.get('depends_on', []):
+    for dependency in dependency_ids(spec):
         r = accepted(job, root, dependency)
         dependencies[str(dependency)] = r['version']
-        path = r.get('end_frame')
-        if not path or file_hash(root/path) != r.get('end_frame_sha256'):
+        path,sha = reference_frame(spec,dependency,r)
+        if not path or file_hash(root/path) != sha:
             raise ValueError('缺少经过验收的衔接画面')
         if path not in images and args.get('first_frame') != path:
             raise ValueError('实际请求没有绑定前段验收画面；文字“保持一致”不能替代素材')

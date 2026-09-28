@@ -477,15 +477,28 @@ def _execute(jid,action,args):
             if composition.get('sources')!={str(p.relative_to(root)):digest(p) for p in sources}:
                 raise ValueError('合成素材或样式已变更，请重新 compose 并审查')
         used=job.get('reserved_generation_seconds',0)
-        budget=float(os.getenv('VIDEO_AGENT_JOB_SECONDS',str(max(30,2*(job.get('duration') or 30)))))
+        from . import plan_budget,media_preflight
+        budget=plan_budget.job_limit(job)
         if seconds and used+seconds>budget:raise ValueError(f'生成预算不足：已预留 {used} 秒，上限 {budget} 秒')
         if job.get('agent_submission_intent') or job.get('submission_uncertain'):raise ValueError('上次提交回执不确定，需核对，不重复付费')
         profile=hypit.snapshot(root,profile)
+        if seconds and job.get('workflow_version',0)>=4:
+            store.ensure_plan_budget(jid)
+            checked=media_preflight.verify(root,sources,profile)
+            if checked:store.update(jid,media_preflight=checked)
         record={'run':args['run'],'output':args['output'],'targets':targets,'state':'pending','generation_seconds':seconds,
                 'contains_generated':any(digest(p) in job.get('generated_hashes',[]) for p in sources if p.suffix=='.mp4')}
         record['runtime_profile']=str(profile.relative_to(root))
         record['stamp_version']=2
-        if manifest:record.update(unit_id=manifest['unit_id'],manifest_id=manifest['version'])
+        if manifest:
+            record.update(unit_id=manifest['unit_id'],manifest_id=manifest['version'])
+            if job.get('workflow_version',0)>=4:
+                from . import failed_generation
+                prior=failed_generation.latest(job,manifest['unit_id'])
+                grant=failed_generation.authorization(job,prior) if prior and prior.get('state')=='failed' else None
+                if grant:
+                    if grant['token'] not in manifest['args']['prompt']:raise ValueError('生成工程未绑定新版本授权')
+                    record.update(retry_token=grant['token'],retry_of=prior['build_id'])
         if not store.reserve_submission(jid,{'stamp':stamp,'run':args['run'],'output':args['output'],'created':time.time(),'record':record},seconds,budget):
             return {'state':'waiting_capacity','message':'生成并发额度已占满，请立即结束当前回合。后台会自动继续，不要重新准备工程或重复调用。'}
         accepted=hypit.build(root,run,profile);bid=accepted.get('build',{}).get('id')

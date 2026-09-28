@@ -88,7 +88,7 @@ def wait_builds(job, stop, once=False):
         raise RecoveryPaused('上次提交状态尚未确认，请先核对提交状态，避免重复生成。')
     root = config.DATA / 'jobs' / job['id'] / 'project'
     builds = job.get('agent_builds', {})
-    pending = [(stamp, b) for stamp, b in builds.items() if b.get('state') in ('pending', 'failed')]
+    pending = [(stamp, b) for stamp, b in builds.items() if b.get('state') in ('pending', 'failed') and not b.get('terminal_verified')]
     if not pending:
         return False
     if job.get('retry_requested'):

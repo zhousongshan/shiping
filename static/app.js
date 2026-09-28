@@ -25,7 +25,7 @@ function show(job){
  const names={understand_subjects:'识别素材',analyze_reference:'分析参考视频',plan_content:'编写制作方案',set_plan:'保存方案',generate_unit:'准备并提交生成',collect_review:'下载并检查片段',collect:'下载视频',review_unit:'检查片段',compose_build:'准备合成',review:'检查成片',finish:'交付'};
  $('timings').replaceChildren(...Object.entries(job.stage_seconds||{}).map(([s,n])=>node('p',`${labels[s]||s}：${seconds(n)}`)),node('p','步骤执行耗时（包含重试，可能与上方阶段重叠）：'),...Object.entries(job.tool_timings||{}).filter(([a])=>names[a]).map(([a,t])=>node('p',`${names[a]}：${seconds(t.seconds)} · ${t.calls} 次`)));
  if(!job.timing_complete)$('timings').prepend(node('p','历史任务的阶段时间记录不完整，已有步骤耗时仍保留。'));
- const planKey=JSON.stringify([job.id,job.status,job.plan,job.final_review,job.reviews,job.question,job.needs_reconciliation,job.result_version,job.saved_clips,job.candidate_delivery,features]);
+ const planKey=JSON.stringify([job.id,job.status,job.plan,job.final_review,job.reviews,job.question,job.needs_reconciliation,job.result_version,job.saved_clips,job.failed_generation_candidates,job.candidate_delivery,features]);
  if(planKey!==lastPlanKey){lastPlanKey=planKey;
  const area=$('plan');area.replaceChildren();
  if(job.plan){area.append(node('h3',job.plan.theme||'制作方案'),node('p',job.plan.story||''));(job.plan.segments||[]).forEach((s,i)=>{
@@ -51,6 +51,7 @@ function show(job){
  const b=node('button','合成所选版本（不重新生成）');b.onclick=async()=>{b.disabled=true;try{show(await api(`/api/jobs/${job.id}/compose-candidate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({build_ids:selected.filter(([i])=>i.checked).map(([,id])=>id)})}))}catch(e){$('message').textContent=e.message}finally{b.disabled=false}};box.append(b)}area.append(box)}
  if(job.final_review)area.append(node('p','成片检查：'+job.final_review.summary));
  if(['failed','needs_configuration','needs_attention','needs_review','needs_revision'].includes(job.status)&&!job.needs_reconciliation&&(job.engine==='hypit-agent-v5'||!['needs_review','needs_revision'].includes(job.status))){const b=node('button',job.status==='needs_review'?'重新检查已有视频':'继续处理');b.onclick=async()=>{try{show(await api(`/api/jobs/${job.id}/retry`,{method:'POST'}))}catch(e){$('message').textContent=e.message}};area.append(b)}
+ for(const failed of job.failed_generation_candidates||[]){const b=node('button',`重新生成失败片段 ${failed.unit_id}（新版本）`);b.onclick=async()=>{if(!window.confirm('将先核对原任务确已失败，再重新生成这一段；新版本会计入生成额度，其他片段保留。是否继续？'))return;b.disabled=true;try{show(await api(`/api/jobs/${job.id}/retry-failed-generation`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({build_id:failed.build_id})}))}catch(e){$('message').textContent=e.message}finally{b.disabled=false}};area.append(b)}
  if(job.needs_reconciliation){const b=node('button','核对提交状态');b.onclick=async()=>{try{const r=await api(`/api/jobs/${job.id}/reconcile`,{method:'POST'});if(r.job)show(r.job);else $('message').textContent=r.message}catch(e){$('message').textContent=e.message}};area.append(b)}
  }
  const done=job.status==='completed',preview=done||job.candidate_available;

@@ -54,6 +54,11 @@ def validate(job, root, plan):
         u['depends_on'] = [str(d) for d in u['depends_on']]
         if any(d not in ids[:index] for d in u['depends_on']):
             raise ValueError('依赖必须指向前面的单元，不能成环')
+        if creative_brief.enabled(job):
+            identity_deps=u.setdefault('identity_depends_on',[])
+            if not isinstance(identity_deps,list) or any(not isinstance(d,str) or d not in ids[:index] for d in identity_deps):
+                raise ValueError('身份基准必须指向前面已规划单元，不能自引用或成环')
+            if identity_deps and not u.get('identity_reason'):raise ValueError('绑定身份基准时须说明共享的主体')
         relation = u.get('continuity', {}).get('type')
         if relation not in RELATIONS or not u.get('continuity', {}).get('reason'):
             raise ValueError('缺少有效连续性策略')
@@ -96,6 +101,8 @@ def validate(job, root, plan):
         raise ValueError('参考结尾遗漏或事件顺序发生变化')
     if creative_brief.enabled(job):
         if covered_requirements!=required:raise ValueError('计划遗漏创作要求，请补齐requirement_ids覆盖')
+        from . import film_audio
+        film_audio.validate(plan)
         plan['brief_version']=brief['version']
     plan['production_version'] = 2
     plan['reference_version'] = (source or {}).get('version')

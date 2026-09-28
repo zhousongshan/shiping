@@ -29,10 +29,13 @@ class Failure:
     retryable: bool = False
     submission_uncertain: bool = False
     http_status: int | None = None
+    reason_code: str | None = None
 
     @property
     def message(self):
-        return MESSAGES[self.code]
+        message=MESSAGES[self.code]
+        if self.reason_code=='INSUFFICIENT_BALANCE':message+=' 服务商同时提示余额不足，请管理员核对账户；该提示不代表请求肯定未被受理。'
+        return message
 
     def public(self):
         return {**asdict(self), 'message': self.message, 'time': time.time()}
@@ -73,4 +76,5 @@ def classify(error, *, stage, provider='unknown', http_status=None, submission=F
     elif stage == 'generation': code = 'GENERATION_FAILED'
     else: code = 'EXECUTION_FAILED'
     retryable = not submission and code in ('NETWORK', 'TIMEOUT', 'RATE_LIMIT', 'UNAVAILABLE', 'INVALID_RESPONSE')
-    return Failure(code, stage, provider, retryable, uncertain, status)
+    reason='INSUFFICIENT_BALANCE' if any(s in upper for s in ('INSUFFICIENT ACCOUNT BALANCE','INSUFFICIENT BALANCE','INSUFFICIENT_BALANCE','INSUFFICIENTBALANCE','INSUFFICIENT_QUOTA','INSUFFICIENT CREDIT','余额不足')) else None
+    return Failure(code, stage, provider, retryable, uncertain, status,reason)

@@ -24,11 +24,20 @@ def generate_unit(job, root, args, execute):
     request = {**args, 'unit_id': spec['id'],
         'duration': args.get('duration', max(4, math.ceil(float(spec['duration'])))),
         'images': list(args.get('images', [*spec.get('subject_paths', []),*spec.get('reference_paths',[])]))}
+    if creative_brief.enabled(job):
+        from . import failed_generation
+        failed_generation.require_authorization(job,spec['id'])
+        prior=failed_generation.latest(job,spec['id'])
+        grant=failed_generation.authorization(job,prior) if prior and prior.get('state')=='failed' else None
+        if grant:
+            # A stable, explicit new revision changes request identity once. URL
+            # rotation is never used to evade the provider submission journal.
+            request['prompt']+='\n制作版本标识（不出现在画面中）：'+grant['token']
     dependencies = {}
-    for dep in spec.get('depends_on', []):
+    for dep in continuity.dependency_ids(spec):
         review = continuity.accepted(job, root, dep)
-        frame = review.get('end_frame')
-        if not frame or file_hash(root/frame) != review.get('end_frame_sha256'):
+        frame,sha = continuity.reference_frame(spec,dep,review)
+        if not frame or file_hash(root/frame) != sha:
             raise ValueError('缺少经过验收的衔接画面')
         dependencies[str(dep)] = review['version']
         if frame != request.get('first_frame') and frame not in request['images']:
@@ -85,5 +94,8 @@ def compose_build(job, root, args, execute):
             clips.append({'unit_id': spec['id'], 'path': review['path'],
                 'duration': review['usable_range'][1]})
         request['clips'] = clips
+    if creative_brief.enabled(job):
+        from . import film_audio
+        request.update(film_audio.compose(job,root,request['clips']))
     made = execute(job['id'], 'compose', request)
     return execute(job['id'], 'build', {'run': made['run'], 'output': made['output']})

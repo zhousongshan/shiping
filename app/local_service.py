@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 import time
-from . import config
+from . import config,local_process
 
 
 def main():
@@ -27,10 +27,15 @@ def main():
                   ['-m','app.worker_main'],
                   ['-m','uvicorn','app.media_gateway:app','--host','127.0.0.1','--port','4781']]
         state=config.DATA/'local-service.json'
+        def save_state():
+            value={'supervisor':os.getpid(),'children':[p.pid for p in children],
+                'supervisor_identity':local_process.record(os.getpid()),
+                'child_identities':[local_process.record(p.pid) for p in children]}
+            temporary=state.with_suffix('.tmp');temporary.write_text(json.dumps(value));temporary.replace(state)
         try:
             for command in commands:
                 children.append(subprocess.Popen([sys.executable,*command],cwd=config.ROOT,env=env,start_new_session=True))
-            state.write_text(json.dumps({'supervisor':os.getpid(),'children':[p.pid for p in children]}))
+            save_state()
             print('本地视频助手：http://127.0.0.1:4780/；API、Worker、素材服务分别运行。',flush=True)
             restarts=[0]*len(children)
             started=[time.monotonic()]*len(children)
@@ -44,7 +49,7 @@ def main():
                     if stop.wait(min(30,2**restarts[index])):break
                     children[index]=subprocess.Popen([sys.executable,*commands[index]],cwd=config.ROOT,env=env,start_new_session=True)
                     started[index]=time.monotonic()
-                    state.write_text(json.dumps({'supervisor':os.getpid(),'children':[child.pid for child in children]}))
+                    save_state()
         finally:
             for p in children:
                 if p.poll() is None:os.killpg(p.pid,signal.SIGTERM)

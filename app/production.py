@@ -50,6 +50,9 @@ def prepare_manifest(job, root, args):
     if not job.get('plan', {}).get('production_version'):
         raise ValueError('旧方案尚未升级：先理解主体、参考事件并重新 set_plan')
     spec = unit(job, args.get('unit_id'))
+    if creative_brief.enabled(job):
+        from .failed_generation import require_authorization
+        require_authorization(job,spec['id'])
     if creative_brief.enabled(job) and job['plan'].get('brief_version')!=job.get('creative_brief',{}).get('version'):
         raise ValueError('创作要求已变化，须重新规划')
     from . import subject_mapping
@@ -115,6 +118,8 @@ def prepare_manifest(job, root, args):
         '替换规则：'+json.dumps(job['subject_spec'].get('replacement_rules',[]),ensure_ascii=False),
         '已确认替换范围（只替换targets，preserve_subjects保留原身份）：'+json.dumps(job.get('subject_mapping'),ensure_ascii=False),
         '对原事件的明确改动：'+json.dumps(spec.get('adaptations',[]),ensure_ascii=False),
+        '跨场景身份基准（只借用主体外观，不复用原背景或强制延续动作）：'+json.dumps(spec.get('identity_reason',''),ensure_ascii=False),
+        '全片声音方案：'+json.dumps(job['plan'].get('audio_plan',{}),ensure_ascii=False)+'；library模式仅生成对白/环境音，背景配乐由后期统一添加；silent模式不生成声音。',
         '衔接：'+json.dumps(spec['continuity'],ensure_ascii=False)])
     args['prompt'] = directive
     return {'unit_id': spec['id'], 'context_version': context_version(job), 'dependencies': dependencies,
@@ -143,6 +148,9 @@ def gate_build(job, root, run, output):
         raise ValueError('实际生成 Provider 已变化')
     if job.get('submission_uncertain'):
         raise ValueError('存在未核对的远端提交，不重复生成')
+    if creative_brief.enabled(job):
+        from .failed_generation import require_authorization
+        require_authorization(job,m['unit_id'])
     attempts=[b for b in job.get('agent_builds',{}).values() if b.get('unit_id')==m['unit_id']]
     if len(attempts)>=unit_generation_limit(job):
         raise ValueError('单元已达到本任务生成次数上限')

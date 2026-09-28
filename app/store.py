@@ -170,6 +170,51 @@ def event(i,msg):
         d['events']=(d.get('events',[])+[{'time':now(),'message':msg}])[-150:]
         c.execute('UPDATE jobs SET doc=? WHERE id=?',(json.dumps(d,ensure_ascii=False),i))
 
+def authorize_failed_generation(i,proof):
+    from . import failed_generation,plan_budget,production
+    from .production_schema import context_version
+    import uuid
+    with connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        jobs=[json.loads(r['doc']) for r in c.execute('SELECT doc FROM jobs').fetchall()]
+        d=next(j for j in jobs if j['id']==i);execution.check(d,now())
+        if not any(x['build_id']==proof['build_id'] for x in failed_generation.candidates(d)):
+            raise ValueError('任务状态已变化，请刷新后查看')
+        build=next(b for b in d['agent_builds'].values() if b['build_id']==proof['build_id'])
+        if proof.get('status') not in failed_generation.TERMINAL or proof.get('provider_task_id')!=build['provider_task_id'] or not 0<=now()-proof.get('checked_at',0)<120:
+            raise ValueError('缺少近期供应商终态凭据')
+        attempts=[b for b in d['agent_builds'].values() if b.get('unit_id')==build['unit_id'] and b.get('generation_seconds',0)]
+        if len(attempts)>=production.unit_generation_limit(d):raise ValueError('该片段已达到生成次数上限，已有结果保留')
+        approved=None
+        if d.get('generation_authorization_key'):
+            approved=c.execute('SELECT * FROM generation_authorizations WHERE owner=? AND request_key=?',
+                (d.get('owner','local'),d['generation_authorization_key'])).fetchone()
+            if not approved or approved['job_id']!=i:raise ValueError('单次测试授权与任务不匹配')
+        d['plan_budget']=plan_budget.allocate(d,jobs,approval=approved)
+        build['terminal_verified']=proof
+        d.setdefault('failed_generation_retries',{})[build['build_id']]={
+            'token':uuid.uuid4().hex,'context_version':context_version(d),'authorized_at':now(),
+            'provider_proof':proof,'unit_id':build['unit_id']}
+        track_status(d,'queued');d.update(status='queued',error=None,failure=None,next_run_at=0,updated=now())
+        c.execute('UPDATE jobs SET status=?,updated=?,doc=? WHERE id=?',('queued',d['updated'],json.dumps(d,ensure_ascii=False),i))
+    return d
+
+def ensure_plan_budget(i):
+    """Reserve the entire remaining first pass atomically across this owner's jobs."""
+    from . import plan_budget
+    with connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        jobs=[json.loads(r['doc']) for r in c.execute('SELECT doc FROM jobs').fetchall()]
+        d=next(j for j in jobs if j['id']==i);execution.check(d,now())
+        approved=None
+        if d.get('generation_authorization_key'):
+            approved=c.execute('SELECT * FROM generation_authorizations WHERE owner=? AND request_key=?',
+                (d.get('owner','local'),d['generation_authorization_key'])).fetchone()
+            if not approved or approved['job_id']!=i:raise ValueError('单次测试授权与任务不匹配')
+        d['plan_budget']=plan_budget.allocate(d,jobs,approval=approved)
+        c.execute('UPDATE jobs SET doc=? WHERE id=?',(json.dumps(d,ensure_ascii=False),i))
+    return d['plan_budget']
+
 def reserve_submission(i,intent,seconds,budget):
     """Reserve provider capacity and the job budget in the same transaction."""
     with connect() as c:
@@ -188,6 +233,10 @@ def reserve_submission(i,intent,seconds,budget):
             if seconds and (approved['expires']<=now() or used+seconds>approved['max_seconds'] or d.get('authorized_submission_count',0)>=approved['max_submissions']):
                 raise ValueError('已达到用户授权的单次测试次数、时长或有效期上限')
         if seconds and used+seconds>budget:raise ValueError('生成预算不足')
+        if seconds and d.get('workflow_version',0)>=4:
+            from . import plan_budget
+            budget_hold=plan_budget.allocate(d,jobs,seconds=seconds,
+                unit_id=intent.get('record',{}).get('unit_id'),limit=budget,approval=approved)
         owner=d.get('owner','local')
         daily_limit=int(os.getenv('VIDEO_AGENT_DAILY_GENERATION_SECONDS','0' if owner=='local' else '600'))
         import datetime
@@ -199,6 +248,11 @@ def reserve_submission(i,intent,seconds,budget):
             return ledger.get(day,0) if ledger is not None else j.get('reserved_generation_seconds',0) if j.get('created',0)>=today else 0
         if seconds and daily_limit:
             spent=sum(daily_reserved(j) for j in jobs if j.get('owner','local')==owner)
+            if d.get('workflow_version',0)<4:
+                spent+=sum(j.get('plan_budget',{}).get('remaining_seconds',0) for j in jobs
+                    if j['id']!=i and j.get('owner','local')==owner and not j.get('archived_at')
+                    and j.get('status')!='completed' and j.get('plan_budget',{}).get('day')==day
+                    and j.get('plan_budget',{}).get('expires',0)>now())
             if spent+seconds>daily_limit:raise ValueError('今日预留生成预算不足（包含返修和待核对提交）')
         if seconds and not approved and not generation_availability(jobs)['available']:
             raise ValueError(GENERATION_PAUSED)
@@ -211,6 +265,17 @@ def reserve_submission(i,intent,seconds,budget):
             d['capacity_wait']=True
             c.execute('UPDATE jobs SET doc=? WHERE id=?',(json.dumps(d,ensure_ascii=False),i))
             return False
+        if seconds and d.get('workflow_version',0)>=4:
+            from . import failed_generation
+            unit_id=intent.get('record',{}).get('unit_id')
+            failed_generation.require_authorization(d,unit_id)
+            prior=failed_generation.latest(d,unit_id)
+            if prior and prior.get('state')=='failed':
+                grant=failed_generation.authorization(d,prior)
+                if intent.get('record',{}).get('retry_token')!=grant['token']:
+                    raise ValueError('新版本未绑定失败重试授权')
+                grant['consumed_at']=now()
+            d['plan_budget']=budget_hold
         today_reserved=daily_reserved(d)
         ledger=d.setdefault('generation_daily_reservations',{})
         ledger[day]=today_reserved+seconds

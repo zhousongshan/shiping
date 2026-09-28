@@ -127,6 +127,8 @@ def public(job):
     result={k:v for k,v in job.items() if k not in ("execution","video","agent_builds","agent_submission_intent","generation_manifests","reference_analysis","reference_partials","subject_spec","provider_profile","unit_reviews","archived_builds")}
     from .candidate import available
     result['saved_clips']=available(job)
+    from .failed_generation import candidates
+    result['failed_generation_candidates']=candidates(job)
     planned={str(u['id']) for u in (job.get('plan') or {}).get('units',[])}
     saved={str(c['unit_id']) for c in result['saved_clips'] if c.get('unit_id') is not None}
     result['production_progress']={'planned_units':len(planned),'saved_units':len(planned & saved),
@@ -303,6 +305,25 @@ def retry(job_id:str,request:Request):
                recheck_requested=doc["status"] in ("needs_review","failed"),transport_retries=0,next_run_at=0)
     store.event(job_id,"已继续处理，保留现有片段和任务编号")
     return public(store.get(job_id))
+
+
+class FailedGenerationRetry(BaseModel):
+    build_id: str = Field(min_length=1,max_length=200)
+
+
+@app.post('/api/jobs/{job_id}/retry-failed-generation')
+def retry_failed_generation(job_id:str,data:FailedGenerationRetry,request:Request):
+    from . import failed_generation
+    from .errors import WorkflowError
+    try:doc=store.get(job_id)
+    except KeyError:raise HTTPException(404,'任务不存在')
+    auth.require_owned(doc,request.state.user)
+    try:
+        proof=failed_generation.verify(doc,data.build_id)
+        updated=store.authorize_failed_generation(job_id,proof)
+    except (ValueError,WorkflowError) as exc:raise HTTPException(409,str(exc))
+    store.event(job_id,'已核对原任务失败，按用户操作为失败片段创建新版本；其他片段保留')
+    return public(updated)
 
 
 @app.post("/api/jobs/{job_id}/reconcile")

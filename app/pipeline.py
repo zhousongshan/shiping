@@ -9,6 +9,9 @@ from .recovery import RecoveryPaused, WorkDeferred, wait_builds
 from .execution import ExecutionLost
 from . import creative_brief
 from .structured import InspectionIncomplete
+from .plan_budget import BudgetUnavailable
+from .media_preflight import MediaUnavailable
+from . import film_audio
 
 PLAN_PROMPT = '''你是视频导演，只返回制作方案JSON，不调用工具、不报告视频完成。
 图片确定真实主体/场景/风格，文字决定动作和新场景。有参考视频时保留已验证事件、镜头、动作与节奏。
@@ -33,11 +36,13 @@ requirement_ids来自creative_brief.requirements；全部units合计覆盖所有
 所有时长为有限正数，segments与units总时长相等；有明确target_seconds时遵守；没有时按表达需要选择8至30秒，需要更长时说明。每个unit最多15秒，尽量至少4秒，短尾段或用户指定短时长除外。
 主体身份图片来自subjects.assets的identity；场景/风格图片以reference_paths绑定，不要丢掉素材用途。没有图片时根据文字创作，不要求用户补图。人物按实际需求规划，不擅自删掉主体。
 首单元continuity.type=independent；连续动作或换机位用same_action/new_angle并depends_on紧邻前段；独立新场景可用new_scene。仍要在描述中保持同一主体和整体风格。
+跨独立场景重复出现且没有上传身份图片的主体，使用identity_depends_on数组指向该主体首次出现的单元，另写identity_reason说明共享主体；这只绑定身份基准，不要求延续前段动作或背景。不得仅写保持一致而不给依赖；多个不同主体不要错误共用身份。
 reference_strategy为none时自行创作；style时借鉴已观察的表达风格；adapt时结合需要采用的内容创作新结构。style/adapt不填写reference_range，不直接传入原片，event_ids只填实际借鉴的真实事件ID（可为空），不要复制无关的原剧情。
 reference_strategy为recreate时，每个unit须填写reference_range（不超过15秒）、event_ids；按原顺序完整覆盖参考事件和时间，非候选切点拆分用same_action并说明boundary_reason。不虚构观察与ID。
 15秒以内的none/style/adapt整片只用一个unit；recreate且参考也不超过15秒时同样只用一个unit。不要按叙事小节机械拆成多次收费请求。
 主体映射只在creative_brief.replacement_required=true时适用；遵守已确认targets与preserve_subjects，不能擅自扩大替换范围。
 严格复刻且固定时长无法容纳必需事件时，返回question询问内容取舍；一般镜头选择自己决定。未要求静音时可有环境声和配乐，不虚构商品卖点或更苛刻的动作要求。
+返回audio_plan：mode为original（保留片段对白/环境声/音乐）、silent（仅用户明确要求无声）、library（全片统一配乐，music_id必须来自available_music，music_volume建议0.18；片段仅生成对白/环境声，不另生配乐）。配乐库为空时不能虚构音乐文件；准确旁白/字幕仍须按实际能力规划和验收，不声称已有专用后期能力。
 '''
 
 def make_plan(job, root, call):
@@ -51,6 +56,7 @@ def make_plan(job, root, call):
         'ratio':job['ratio'], 'subjects':job['subject_spec'],
         'reference':job.get('reference_analysis'),
         'subject_mapping':mapping,'creative_brief':job.get('creative_brief'),
+        'available_music':film_audio.options() if creative_brief.enabled(job) else [],
     },ensure_ascii=False)}]
     for attempt in range(2):
         proposal=planner.chat(PLAN_PROMPT_V4 if creative_brief.enabled(job) else PLAN_PROMPT,content)
@@ -133,20 +139,22 @@ def run(job, stop):
                 builds=[b for b in job.get('agent_builds',{}).values() if b.get('unit_id')==uid]
                 latest=builds[-1] if builds else None
                 review=job.get('unit_reviews',{}).get(uid,{})
-                dependencies={dep:continuity.accepted(job,root,dep)['version'] for dep in outstanding.get('depends_on',[])}
+                dependencies={dep:continuity.accepted(job,root,dep)['version'] for dep in continuity.dependency_ids(outstanding)}
                 stale_dependency=bool(latest and final_repair.dependency_changed(job,latest,dependencies))
                 current=bool(latest and review.get('original_sha256',review.get('sha256'))==latest.get('collected_sha256') and review.get('context_version')==context_version(job))
                 if latest and latest['state']=='pending':
                     wait_builds(job,stop,once=True);continue
-                if latest and latest['state']=='failed':
+                from . import failed_generation
+                authorized_failure=bool(latest and latest['state']=='failed' and failed_generation.authorization(job,latest))
+                if latest and latest['state']=='failed' and not authorized_failure:
                     raise RecoveryPaused('生成服务返回失败，原任务和结果已保留，请核对具体失败记录。')
-                if latest and not current and not stale_dependency:
+                if latest and latest['state']=='complete' and not current and not stale_dependency:
                     store.update(jid,status='checking',error=None)
                     call('collect_review',{'build_id':latest['build_id']});continue
                 if current and review.get('verdict')=='warn' and job.get('recheck_requested') and not stale_dependency:
                     store.update(jid,recheck_requested=False,status='checking',error=None)
                     call('collect_review',{'build_id':latest['build_id']});continue
-                if current and review.get('verdict')!='fail' and not stale_dependency:
+                if current and not authorized_failure and review.get('verdict')!='fail' and not stale_dependency:
                     store.update(jid,status='needs_review',error=review.get('summary') or '检查证据不足，保留视频供复核，不自动重新生成。');return
                 if len(builds)>=production.unit_generation_limit(job):
                     detail=(review.get('summary')+'；') if review.get('summary') else ''
@@ -158,6 +166,9 @@ def run(job, stop):
                     prompt+='\n前序片段已经返修，必须以新绑定的真实衔接画面继续动作，保持主体身份。'
                 elif current:
                     prompt+='\n本次定向修复，保留已经正确的内容：'+json.dumps(review.get('checks',[]),ensure_ascii=False)
+                if creative_brief.enabled(job):
+                    film_audio.preflight(job)
+                    store.ensure_plan_budget(jid)
                 store.update(jid,status='generating',error=None)
                 result=call('generate_unit',{'unit_id':uid,'prompt':prompt})
                 if result.get('state')=='waiting_capacity':
@@ -211,6 +222,11 @@ def run(job, stop):
                          error=review.get('summary') or '成片检查未通过，视频已保存。');return
         store.update(jid,status='queued',next_run_at=time.time()+1)
     except WorkDeferred:
+        return
+    except (BudgetUnavailable,MediaUnavailable,film_audio.AudioUnavailable) as exc:
+        store.update(jid,status='needs_configuration',error=str(exc),
+            failure={'code':'BUDGET_LIMIT' if isinstance(exc,BudgetUnavailable) else 'AUDIO_CONFIGURATION' if isinstance(exc,film_audio.AudioUnavailable) else 'MEDIA_PREFLIGHT',
+                     'stage':'preflight','retryable':True,'message':str(exc)})
         return
     except InspectionIncomplete as exc:
         store.update(jid,status='needs_review',error=str(exc),

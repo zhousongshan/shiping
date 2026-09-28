@@ -17,7 +17,7 @@ def review(job, root, args):
     manifest = job['generation_manifests'][generation['manifest_id']]
     if manifest['context_version'] != context_version(job):
         raise ValueError('生成上下文已变化，不能按旧计划验收')
-    from .continuity import accepted
+    from .continuity import accepted,reference_frame
     for dep, version in manifest['dependencies'].items():
         if accepted(job, root, dep)['version'] != version:
             raise ValueError('前段已修改，当前生成使用了旧衔接画面')
@@ -50,7 +50,7 @@ def review(job, root, args):
         '检查整段每次镜头变化时主体脸部、形状、动作、场景与原角色残留，逐项记录实际时间；不把目标当事实。')
     events = [e for e in job.get('reference_analysis', {}).get('events', []) if e['id'] in spec.get('event_ids', [])]
     content = [{'type': 'text', 'text': json.dumps({'user_goal':job.get('effective_prompt',job['prompt']),'user_feedback':job.get('feedback'),'unit': spec, 'subjects': job['subject_spec'], 'reference_events': events,
-        'actual_observation': observation, 'seconds': duration,'final_recheck':focus,'creative_brief':job.get('creative_brief')}, ensure_ascii=False)}]
+        'audio_plan':job['plan'].get('audio_plan'), 'actual_observation': observation, 'seconds': duration,'final_recheck':focus,'creative_brief':job.get('creative_brief')}, ensure_ascii=False)}]
     for a in job['subject_spec']['inputs']:
         content += [{'type': 'text', 'text': '用户基准：'+a['path']}, planner.image_content(root/a['path'])]
     frames = media.frames(path, root/'evidence'/f'{sha[:16]}-unit-review', 16)
@@ -64,7 +64,9 @@ def review(job, root, args):
         content += [{'type':'text','text':f'边界实际帧 {at:.4f} 秒'},planner.image_content(frame)]
     for dep in manifest['dependencies']:
         prev = accepted(job, root, dep)
-        content += [{'type': 'text', 'text': '前段验收结束状态：'+json.dumps(prev.get('end_state'), ensure_ascii=False)}, planner.image_content(root/prev['end_frame'])]
+        frame,_=reference_frame(spec,dep,prev)
+        identity_only=dep in spec.get('identity_depends_on',[]) and dep not in spec.get('depends_on',[])
+        content += [{'type': 'text', 'text': ('跨场景主体外观基准，不要求相同背景或延续动作：' if identity_only else '前段验收结束状态：')+json.dumps(prev.get('identity_state') if identity_only else prev.get('end_state'), ensure_ascii=False)}, planner.image_content(root/frame)]
     if events and creative_brief.strict_reference(job):
         ref = root/'assets/reference.mp4'
         from .agent_tools import range_clip
@@ -73,7 +75,10 @@ def review(job, root, args):
             content += [{'type': 'text', 'text': f'对应原参考片段 {t} 秒，仅对照动作和事件'}, planner.image_content(frame)]
     instruction = '独立检查真实生成片段。输出JSON：verdict(pass/fail/warn)、checks（每项category、requirement、status、evidence实际时间和事实，至少包含identity/events/continuity/audio四个category）、issues数组、summary、end_state、end_frame_second、suspect_ranges数组（start/end为片段内秒数）。完整主体替换不能保留原玩偶脸或只是换装。事件必须按对应参考与需求发生。主体、事件、动作、声音分别判断；有明确错误fail，看不清warn，不能单凭流畅或最后画面正确判pass。无音轨或首镜无前镜应明确说明不适用。结束帧只能从已观察且清晰的真实帧选择。'
     if creative_brief.enabled(job):
-        instruction+=' 以creative_brief与本unit为验收标准，style/adapt不要求复刻未采用参考事件；只在replacement_required时检查替换。每项check增加requirement_ids数组，列出实际检查的制作要求ID，合计覆盖本unit.requirement_ids。'
+        instruction+=' 以creative_brief与本unit为验收标准，style/adapt不要求复刻未采用参考事件；只在replacement_required时检查替换。audio_plan.mode=library时片段无需已有背景配乐，全片合成后再验收配乐；片段仍需检查要求的对白与音效。silent模式会在后期移除全部音轨，片段有声本身不算失败，最终成片必须无声。每项check增加requirement_ids数组，列出实际检查的制作要求ID，合计覆盖本unit.requirement_ids。'
+    needs_identity=any(spec['id'] in u.get('identity_depends_on',[]) for u in job['plan']['units'])
+    if needs_identity:
+        instruction+=' 本段将作为后续跨场景主体基准。额外返回identity_frame_second与identity_state：从已观察的实际帧中选主体清晰完整、特征可辨的时间，描述其外观；不必在片尾。不能找到明确身份帧则warn，不虚构画面。'
     def validate_result(result):
         verdict=judge(result)
         if not {'identity','events','continuity','audio'} <= {c.get('category') for c in result['checks']}:
@@ -88,6 +93,9 @@ def review(job, root, args):
             at=number(result.get('end_frame_second',-1))
             if not 0<=at<duration or duration-at>.6 or not result.get('end_state'):
                 raise ValueError('通过审查需要最后0.6秒内的实际结束帧与结束状态')
+        if verdict=='pass' and needs_identity:
+            if not 0<=number(result.get('identity_frame_second',-1))<duration or not result.get('identity_state'):
+                raise ValueError('后续主体基准需要实际清晰身份帧与外观记录')
         creative_brief.validate_review(job,result,spec)
         return result
     result=structured.call(root,'unit-review',instruction,content,validate_result,inspection=True)
@@ -123,6 +131,11 @@ def review(job, root, args):
         frame.parent.mkdir(parents=True, exist_ok=True)
         media.command([config.FFMPEG,'-v','error','-y','-ss',str(at),'-i',str(path),'-frames:v','1','-pix_fmt','yuvj420p',str(frame)])
         output.update(end_frame=str(frame.relative_to(root)), end_frame_sha256=file_hash(frame), usable_range=[0, duration])
+    if verdict=='pass' and needs_identity:
+        at=number(result['identity_frame_second'])
+        frame=root/'production'/'frames'/f'{sha}-identity-{at:.4f}.jpg'
+        media.command([config.FFMPEG,'-v','error','-y','-ss',str(at),'-i',str(path),'-frames:v','1','-pix_fmt','yuvj420p',str(frame)])
+        output.update(identity_frame=str(frame.relative_to(root)),identity_frame_sha256=file_hash(frame),identity_state=result['identity_state'])
     output = artifact(root, 'unit-reviews', output)
     reviews = dict(job.get('unit_reviews', {}))
     # A focused pass on unchanged media should not invalidate every downstream
