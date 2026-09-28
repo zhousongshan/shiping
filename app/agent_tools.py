@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from shutil import copy2
 from . import config, store, media, planner, compiler, hypit_adapter as hypit
-from . import production, production_schema as ps, workflows
+from . import production, production_schema as ps, workflows, creative_brief, structured
 
 USAGE = {
  'generate_unit':'{unit_id,prompt,images?:[relative image paths],duration?:integer4..15,first_frame?,last_frame?}; preferred: automatically cut the planned reference, attach accepted dependency frames, create source, validate and submit once. No name/run/output/videos needed. pending means end this turn.',
@@ -389,7 +389,8 @@ def _execute(jid,action,args):
             for u in units:
                 continuity=u.get('continuity',{})
                 if continuity.get('type') not in ['independent','same_action','new_angle','new_scene'] or not continuity.get('reason'):raise ValueError('Each unit needs an explicit continuity type and reason')
-                if job.get('reference'):
+                from .creative_brief import strict_reference
+                if strict_reference(job):
                     r=u.get('reference_range',[])
                     if len(r)!=2 or not 0<=float(r[0])<float(r[1])<=store.asset(job['reference'])['duration']+.05 or r[1]-r[0]>15.05:raise ValueError('Each referenced unit requires a valid <=15 second reference_range')
         args.setdefault('style','');args.setdefault('warnings',[])
@@ -560,7 +561,7 @@ def _execute(jid,action,args):
         timeline=[];start_at=0
         for clip in (job.get('composition') or {}).get('clips',[]):
             timeline.append({'unit_id':clip.get('unit_id'),'start':start_at,'end':start_at+float(clip['duration'])});start_at+=float(clip['duration'])
-        content=[{'type':'text','text':json.dumps({'goal':job.get('effective_prompt',job['prompt']), 'plan':job.get('plan'),'observations':observations,'timeline':timeline,'reference_notes':notes,'required_events':job.get('reference_analysis',{}).get('events',[])},ensure_ascii=False)}]
+        content=[{'type':'text','text':json.dumps({'goal':job.get('effective_prompt',job['prompt']), 'plan':job.get('plan'),'observations':observations,'timeline':timeline,'reference_notes':notes,'creative_brief':job.get('creative_brief'),'required_events':job.get('reference_analysis',{}).get('events',[]) if creative_brief.strict_reference(job) else []},ensure_ascii=False)}]
         for aid in job['images']:
             content.extend([{'type':'text','text':'以下是用户基准图片。只用于对比成片是否满足其主体、场景或风格用途；审片对象是生成视频，不是这张图片。'},planner.image_content(root/'assets'/f'{aid}.jpg')])
         if job.get('reference'):
@@ -572,7 +573,16 @@ def _execute(jid,action,args):
         # Whole-film judgment and seam checks read the same completed video independently.
         with ThreadPoolExecutor(max_workers=2) as pool:
             joins_future=pool.submit(review_joins,root,p,job)
-            review=planner.chat('独立审片，检查对象是生成视频。先从原始用户要求中提取可观察的条件，再逐项描述实际画面证据，最后判定；不能把制作方案或目标描述当作已实现的事实。核对主体身份、物体位置与接触关系、动作顺序、镜头变化、文字和声音。空间关系按其实际含义检查：放置在台面上要求主体接触承托面，悬在台面上方不能算放置成功；握住、贴住、戴上等也不能只因两物同时出现就算满足。观察记录指出悬浮、遗漏或错误时，不得在汇总中改写成完成。参考观察的不确定推断不得升级成硬性要求，例如无法确认精确转角时不要强制180度。不得虚构用户未提出的限制：没有台词不等于禁止配乐；未要求静音时合适背景音乐允许。用户明确要求优先于自动方案。任何必要条件明确不符则fail，无法观察则warn，全部满足才pass。JSON：checks数组（每项requirement、evidence含实际时间与画面事实、status为pass/fail/warn、unit_ids为能根据timeline明确归属的生成单元ID数组；无法归属时用空数组，不得猜测），verdict、issues数组、summary。不重复评估基准图。',content)
+            instruction='独立审片，检查对象是生成视频。先从原始用户要求中提取可观察的条件，再逐项描述实际画面证据，最后判定；不能把制作方案或目标描述当作已实现的事实。核对主体身份、物体位置与接触关系、动作顺序、镜头变化、文字和声音。空间关系按其实际含义检查：放置在台面上要求主体接触承托面，悬在台面上方不能算放置成功；握住、贴住、戴上等也不能只因两物同时出现就算满足。观察记录指出悬浮、遗漏或错误时，不得在汇总中改写成完成。参考观察的不确定推断不得升级成硬性要求，例如无法确认精确转角时不要强制180度。不得虚构用户未提出的限制：没有台词不等于禁止配乐；未要求静音时合适背景音乐允许。用户明确要求优先于自动方案。任何必要条件明确不符则fail，无法观察则warn，全部满足才pass。JSON：checks数组（每项requirement、evidence含实际时间与画面事实、status为pass/fail/warn、unit_ids为能根据timeline明确归属的生成单元ID数组；无法归属时用空数组，不得猜测），verdict、issues数组、summary。不重复评估基准图。'
+            if creative_brief.enabled(job):
+                instruction+=' creative_brief为统一验收要求，逐项检查requirements；style/adapt不要求复制未采用的原片事件。每项check增加requirement_ids数组，合计覆盖全部制作要求ID。'
+            def validate_review(value):
+                if value.get('verdict') not in ('pass','fail','warn') or not isinstance(value.get('issues'),list) or not isinstance(value.get('summary'),str):
+                    raise ValueError('检查结论需要verdict、issues数组和summary')
+                if job.get('production_version')==2:ps.judge(value)
+                creative_brief.validate_review(job,value)
+                return value
+            review=structured.call(root,'final-review',instruction,content,validate_review,inspection=True)
             joins=joins_future.result()
         if review.get('verdict') not in ['pass','fail','warn'] or not isinstance(review.get('issues'),list) or not isinstance(review.get('summary'),str):raise ValueError('Invalid review')
         if job.get('production_version')==2:review['verdict']=ps.judge(review)

@@ -1,7 +1,7 @@
 """Bundle mechanical tool steps while preserving the existing execution gates."""
 import math
 
-from . import store, continuity
+from . import store, continuity, creative_brief
 from .production_schema import context_version, file_hash, fingerprint
 from .unit_planner import unit
 
@@ -33,7 +33,7 @@ def generate_unit(job, root, args, execute):
         dependencies[str(dep)] = review['version']
         if frame != request.get('first_frame') and frame not in request['images']:
             request['images'].append(frame)
-    if job.get('reference'):
+    if creative_brief.strict_reference(job):
         start, end = spec['reference_range']
         clip, _, _, _ = range_clip(root, root/'assets/reference.mp4', {'start': start, 'end': end})
         request['videos'] = [str(clip.relative_to(root))]

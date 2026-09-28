@@ -26,7 +26,10 @@ class InputAPITests(unittest.TestCase):
                         data={'prompt':'展示产品' if text else '', 'images':[image] if img else [],'reference':reference if ref else None}
                         r=client.post('/api/jobs',json=data)
                         self.assertEqual(r.status_code,200 if any([text,img,ref]) else 422)
-                        if ref:self.assertEqual(r.json()['duration'],2)
+                        if any([text,img,ref]):
+                            self.assertEqual(r.json()['workflow_version'],4)
+                            self.assertIsNone(r.json()['duration'])
+                            self.assertEqual(r.json()['prompt'],data['prompt'])
                     self.assertEqual(client.post('/api/assets?kind=image',content=b'bad image').status_code,400)
                     self.assertEqual(client.post('/api/assets?kind=video',content=b'').status_code,400)
                     self.assertEqual(client.post('/api/jobs',json={'images':[image,image]}).status_code,400)

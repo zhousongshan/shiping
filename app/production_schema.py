@@ -43,9 +43,10 @@ def valid_time(job, duration):
     return target is None or abs(duration - number(target)) <= .15
 
 def context_version(job):
-    return fingerprint({k: job.get(k) for k in (
-        'prompt', 'effective_prompt', 'images', 'reference', 'plan', 'duration',
-        'timing_policy', 'reference_analysis', 'subject_spec', 'provider_profile')})
+    fields=['prompt','effective_prompt','images','reference','plan','duration',
+            'timing_policy','reference_analysis','subject_spec','provider_profile']
+    if job.get('workflow_version',0)>=4:fields.append('creative_brief')
+    return fingerprint({k:job.get(k) for k in fields})
 
 def judge(result):
     """Reject empty or contradictory evidence instead of trusting a verdict string."""

@@ -1,5 +1,6 @@
 """Validate narrative coverage and real generation-unit dependencies."""
 from .production_schema import fingerprint, number, file_hash
+from . import creative_brief
 
 RELATIONS = ('independent', 'same_action', 'new_angle', 'new_scene')
 
@@ -18,12 +19,17 @@ def validate(job, root, plan):
         mapping=subject_mapping.current(job)
         if not mapping:raise ValueError('主体替换对应尚未明确，请先确认要替换的参考角色')
         plan['subject_mapping_version']=mapping['version']
+    strict=creative_brief.strict_reference(job)
+    brief=job.get('creative_brief') or {}
+    required={r['id'] for r in brief.get('requirements',[])}
+    covered_requirements=set()
+    if creative_brief.enabled(job) and not required:raise ValueError('缺少统一创作要求')
     source = job.get('reference_analysis')
     total=sum(number(u.get('duration')) for u in units)
     # Narrative beats and camera cuts do not require separate paid requests.
     # Retain legacy plans; only validate new standard-workflow proposals.
     if (job.get('workflow_version',0)>=3 and total<=15 and len(units)>1
-            and (not job.get('reference') or (source or {}).get('duration',float('inf'))<=15)):
+            and (not strict or (source or {}).get('duration',float('inf'))<=15)):
         raise ValueError('15秒以内且参考不超过15秒的短片应使用一个生成单元；多个动作或镜头写入segments和同一unit，不能按叙事小节拆成多个收费请求')
     if job.get('reference'):
         if not source or source.get('status') != 'verified' or source.get('source_sha256') != file_hash(root/'assets/reference.mp4'):
@@ -55,7 +61,16 @@ def validate(job, root, plan):
             raise ValueError('连续动作或换机位必须依赖前一单元')
         if not isinstance(u.get('description'), str) or not u['description'].strip():
             raise ValueError('每单元必须描述实际事件与动作，不只写一句保持一致')
-        if events:
+        if creative_brief.enabled(job):
+            ids_for_unit=u.get('requirement_ids')
+            if not isinstance(ids_for_unit,list) or any(r not in required for r in ids_for_unit):
+                raise ValueError('每段requirement_ids必须来自统一创作要求')
+            covered_requirements.update(ids_for_unit)
+            if not strict:
+                selected=u.get('event_ids',[])
+                if not isinstance(selected,list) or any(e not in events for e in selected):raise ValueError('借鉴事件必须来自真实参考观察')
+                if u.get('reference_range') is not None:raise ValueError('风格借鉴/改编不直接绑定原视频区间，请按创作要求规划')
+        if events and strict:
             selected = u.get('event_ids', [])
             if not selected or any(e not in events for e in selected):
                 raise ValueError('每个参考单元必须对应已观察 event_ids')
@@ -75,10 +90,13 @@ def validate(job, root, plan):
                 raise ValueError('非候选切点分段必须说明动作阶段 boundary_reason 并建立连续依赖')
             if not near_cut and relation != 'same_action':
                 raise ValueError('镜头内部拆分须采用 same_action，不能假装独立换景')
-    if events and (set(covered) != set(events) or len(covered) != len(set(covered))):
+    if strict and events and (set(covered) != set(events) or len(covered) != len(set(covered))):
         raise ValueError('已观察事件必须各有一个采用单元，不能遗漏或重复播放')
-    if events and (covered_until < source['duration']-.1 or [events[e]['second'] for e in covered] != sorted(events[e]['second'] for e in covered)):
+    if strict and events and (covered_until < source['duration']-.1 or [events[e]['second'] for e in covered] != sorted(events[e]['second'] for e in covered)):
         raise ValueError('参考结尾遗漏或事件顺序发生变化')
+    if creative_brief.enabled(job):
+        if covered_requirements!=required:raise ValueError('计划遗漏创作要求，请补齐requirement_ids覆盖')
+        plan['brief_version']=brief['version']
     plan['production_version'] = 2
     plan['reference_version'] = (source or {}).get('version')
     plan['subject_version'] = subjects['version']

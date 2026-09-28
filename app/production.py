@@ -1,6 +1,6 @@
 """Execution gates shared by generated and hand-authored Hypit sources."""
 import json
-from . import store, config, hypit_adapter as hypit
+from . import store, config, hypit_adapter as hypit, creative_brief
 from .production_schema import artifact, context_version, file_hash, fingerprint, number, valid_time
 from .unit_planner import unit
 from .continuity import validate_inputs, accepted
@@ -50,6 +50,8 @@ def prepare_manifest(job, root, args):
     if not job.get('plan', {}).get('production_version'):
         raise ValueError('旧方案尚未升级：先理解主体、参考事件并重新 set_plan')
     spec = unit(job, args.get('unit_id'))
+    if creative_brief.enabled(job) and job['plan'].get('brief_version')!=job.get('creative_brief',{}).get('version'):
+        raise ValueError('创作要求已变化，须重新规划')
     from . import subject_mapping
     if subject_mapping.required(job):
         mapping=subject_mapping.current(job)
@@ -71,7 +73,10 @@ def prepare_manifest(job, root, args):
     images, videos = args.get('images', []), args.get('videos', [])
     if (images or videos) and (args.get('first_frame') or args.get('last_frame')):
         raise ValueError('此接口不支持参考输入与首尾帧同时使用')
-    if job.get('reference'):
+    if creative_brief.enabled(job) and not creative_brief.strict_reference(job) and videos:
+        raise ValueError('当前借鉴策略不直接提交原视频')
+    if creative_brief.strict_reference(job):
+        if creative_brief.enabled(job) and not config.media_base_url():raise ValueError('参考素材通道未配置，尚未提交生成')
         if not videos:
             raise ValueError('参考复刻不能遗漏对应视频输入')
         expected = spec['reference_range']
@@ -100,9 +105,10 @@ def prepare_manifest(job, root, args):
     if len(prompt) < 20:
         raise ValueError('请提供明确的单元导演指令')
     # Stable constraints are serialized into the actual model direction, not just the Agent context.
-    events=[{'reference_second':round(e['second']-spec['reference_range'][0],3),'event':e['description']}
+    events=[{'reference_second':round(e['second']-(spec.get('reference_range') or [0])[0],3),'event':e['description']}
         for e in job.get('reference_analysis',{}).get('events',[]) if e['id'] in spec.get('event_ids',[])]
     directive = '\n'.join([prompt, '本段执行内容：'+spec['description'],
+        '统一创作要求（参考事实仅供采用，未采用事件不强制复刻）：'+json.dumps(job.get('creative_brief'),ensure_ascii=False),
         '参考片段事件时序（其中原角色名称只用于对应动作，目标身份以用户图片及替换规则为准）：'+json.dumps(events,ensure_ascii=False),
         '本段需要出现的主体图片：'+json.dumps(spec.get('subject_paths',[]),ensure_ascii=False),
         '主体与素材用途：'+json.dumps(job['subject_spec']['assets'],ensure_ascii=False),

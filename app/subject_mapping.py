@@ -4,6 +4,8 @@ from . import planner,store
 from .production_schema import artifact,fingerprint
 
 def required(job):
+    if job.get("workflow_version",0)>=4 and not job.get("creative_brief",{}).get("replacement_required"):
+        return False
     return bool(job.get('workflow_version',0)>=3 and job.get('reference') and
                 any(a.get('role')=='identity' for a in job.get('subject_spec',{}).get('assets',[])))
 

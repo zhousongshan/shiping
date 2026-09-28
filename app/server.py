@@ -127,6 +127,10 @@ def public(job):
     result={k:v for k,v in job.items() if k not in ("execution","video","agent_builds","agent_submission_intent","generation_manifests","reference_analysis","reference_partials","subject_spec","provider_profile","unit_reviews","archived_builds")}
     from .candidate import available
     result['saved_clips']=available(job)
+    planned={str(u['id']) for u in (job.get('plan') or {}).get('units',[])}
+    saved={str(c['unit_id']) for c in result['saved_clips'] if c.get('unit_id') is not None}
+    result['production_progress']={'planned_units':len(planned),'saved_units':len(planned & saved),
+        'complete_video':job['status']=='completed'}
     root=config.DATA/'jobs'/job['id']
     result['candidate_available']=(root/'candidate.mp4').is_file()
     shown=root/('final.mp4' if job['status']=='completed' else 'candidate.mp4')
@@ -217,11 +221,11 @@ def create(data:NewJob,request:Request):
         auth.require_owned(ref,request.state.user)
         if ref["kind"]!="video":raise HTTPException(400,"参考素材不是视频")
     try:
-        supplied=data.model_dump()
+        supplied={**data.model_dump(),"workflow_version":4}
         if supplied['max_unit_generations'] is None:
             supplied.pop('max_unit_generations')
         resolved=intent.resolve(supplied)
-        return public(store.create({**resolved,"owner":request.state.user,"engine":"hypit-agent-v5","production_version":2,"workflow_version":3,"source_version":config.SOURCE_VERSION},daily_limit=limit,request_key=key,require_generation=True))
+        return public(store.create({**resolved,"owner":request.state.user,"engine":"hypit-agent-v5","production_version":2,"workflow_version":4,"source_version":config.SOURCE_VERSION},daily_limit=limit,request_key=key,require_generation=True))
     except ValueError as exc:raise HTTPException(503 if str(exc)==store.GENERATION_PAUSED else 409 if '重复请求' in str(exc) else 429,str(exc))
 
 
@@ -295,7 +299,8 @@ def retry(job_id:str,request:Request):
         raise HTTPException(409,'旧任务请使用修改入口创建新版任务')
     transition(job_id,('failed','needs_configuration','needs_attention','needs_review','needs_revision'),
                _absent=('submission_intent','agent_submission_intent','submission_uncertain'),
-               status="queued",error=None,failure=None,retry_requested=True,transport_retries=0,next_run_at=0)
+               status="queued",error=None,failure=None,retry_requested=True,
+               recheck_requested=doc["status"] in ("needs_review","failed"),transport_retries=0,next_run_at=0)
     store.event(job_id,"已继续处理，保留现有片段和任务编号")
     return public(store.get(job_id))
 

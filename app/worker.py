@@ -34,7 +34,7 @@ def wait_build(job_id, root, profile, build_id, label):
 
 
 def process(job):
-    if job.get('workflow_version')==3:
+    if job.get('workflow_version') in (3,4):
         from .pipeline import run
         return run(job,STOP)
     if job.get('engine')=='hypit-agent-v5':
