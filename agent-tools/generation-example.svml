@@ -1,0 +1,13 @@
+<?svml using="@hypit/markup@1"?>
+<svml>
+<import as="media" from="@hypit/media@1"/>
+<import as="text" from="@hypit/text@1"/>
+<import as="seedance" from="@hypit/seedance@1"/>
+<media:Image id="subject" src="./assets/REPLACE_WITH_UPLOADED_IMAGE.jpg"/>
+<media:Video id="motion" src="./assets/REPLACE_WITH_CUT_REFERENCE.mp4"/>
+<text:Value id="direction">用图片1主体替换视频1主体，具体写清保留事件、镜头和动作。根据实际任务改写，不要保留这段示例。</text:Value>
+<seedance:ReferenceVideo id="clip" model="standard" prompt={direction} duration="8" resolution="720p" aspect-ratio="16:9" generate-audio="true">
+<seedance:Reference image={subject}/>
+<seedance:Reference video={motion}/>
+</seedance:ReferenceVideo>
+</svml>

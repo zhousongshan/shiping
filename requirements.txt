@@ -1,0 +1,7 @@
+fastapi==0.141.1
+pydantic==2.13.5
+uvicorn==0.53.0
+requests==2.34.2
+Pillow==12.3.0
+jsonschema==4.26.0
+psycopg[binary]==3.2.10

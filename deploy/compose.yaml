@@ -1,0 +1,65 @@
+name: hypit-video
+x-app: &app
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  env_file: ../.env
+  environment:
+    VIDEO_AGENT_DATABASE_URL: postgresql://hypit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/hypit
+  volumes:
+    - media:/data
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 5m
+  depends_on:
+    db:
+      condition: service_healthy
+services:
+  db:
+    image: postgres:17.10-bookworm
+    environment:
+      POSTGRES_DB: hypit
+      POSTGRES_USER: hypit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U hypit -d hypit]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:4780:4780"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4780/api/ready',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *app
+    command: [python, -m, app.worker_main]
+    healthcheck:
+      test: [CMD, python, -c, "from app.runtime import worker_alive; raise SystemExit(0 if worker_alive() else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+  media:
+    <<: *app
+    command: [python, -m, uvicorn, app.media_gateway:app, --host, 0.0.0.0, --port, "4781", --no-access-log]
+  proxy:
+    image: caddy:2
+    environment:
+      APP_HOST: ${APP_HOST:?Set APP_HOST}
+      MEDIA_HOST: ${MEDIA_HOST:?Set MEDIA_HOST}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - certificates:/data
+    restart: unless-stopped
+volumes:
+  media:
+  database:
+  certificates:

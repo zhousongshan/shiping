@@ -1,0 +1,15 @@
+{$APP_HOST} {
+    request_body {
+        max_size 151MB
+    }
+    reverse_proxy api:4780
+}
+{$MEDIA_HOST} {
+    @media path /media/*
+    handle @media {
+        reverse_proxy media:4781
+    }
+    handle {
+        respond 404
+    }
+}

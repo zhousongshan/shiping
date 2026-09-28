@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.7-rc.1",
+    "@hypit/hypit": "0.2.7"
+  }
+}

@@ -1,0 +1,1 @@
+{"name":"@local/provider-autodl-wan","version":"0.1.0","private":true,"type":"module","hypit":{"activation":"./activation.js"},"exports":{".":"./provider.js"}}

@@ -1,0 +1,11 @@
+data
+node_modules
+.venv
+.git
+.env
+.env.*
+__pycache__
+**/__pycache__
+*.log
+backups
+dist
