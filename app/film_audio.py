@@ -42,7 +42,7 @@ def validate(plan):
         raise ValueError('全片声音模式须为original/silent/library')
     if audio['mode']=='library':
         item=library().get(audio.get('music_id'))
-        if not item:raise AudioUnavailable('计划需要的公司配乐未配置，尚未提交视频生成')
+        if not item:raise AudioUnavailable('当前music_id不存在或配乐库为空；请改用original让视频模型生成音乐，不能选择无素材的library；尚未提交视频生成')
         volume=audio.get('music_volume',.18)
         if isinstance(volume,bool) or not isinstance(volume,(int,float)) or not math.isfinite(volume) or not 0<volume<=1:
             raise ValueError('配乐音量须为0至1之间的数值')

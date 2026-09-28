@@ -240,3 +240,63 @@ class CreativeFlowTests(unittest.TestCase):
                 self.assertEqual(final['status'],'completed',final.get('error'))
                 self.assertEqual(actions,['set_plan','generate_unit','collect_review','compose_build','collect','review','finish'])
                 self.assertEqual(final['creative_brief']['reference_strategy'],'adapt' if reference else 'none')
+
+    def test_live_model_numeric_requirement_ids_are_canonical_and_collisions_rejected(self):
+        job,root=self.job(reference=False);reply=self.response(job)
+        reply['requirements'][0]['id']=1
+        validated=brief.validate(job,reply)
+        self.assertEqual(validated['requirements'][0]['id'],'1')
+        self.assertEqual(reply['requirements'][0]['id'],1)
+        job=self.save_brief(job,root,reply)
+        plan=self.plan(job);plan['units'][0]['requirement_ids']=[1]
+        unit_planner.validate(job,root,plan)
+        self.assertEqual(plan['units'][0]['requirement_ids'],['1'])
+        result={'checks':[{'requirement_ids':[1]},{'requirement_ids':[]}]}
+        brief.validate_review(job,result,plan['units'][0])
+        self.assertEqual(result['checks'][0]['requirement_ids'],['1'])
+        with self.assertRaisesRegex(ValueError,'生成单元ID'):
+            brief.validate_review(job,{'checks':[{'requirement_ids':['u1']}]})
+        reply['requirements'].append({**reply['requirements'][0],'id':'1'})
+        with self.assertRaisesRegex(ValueError,'ID'):brief.validate(job,reply)
+
+    def test_plan_correction_includes_independent_audio_failure(self):
+        job,root=self.job(reference=False);job=self.save_brief(job,root)
+        bad=self.plan(job);bad['audio_plan']={'mode':'library','music_id':'invented'}
+        good=self.plan(job);good['audio_plan']={'mode':'original'}
+        seen=[]
+        def model(instruction,content):
+            if not seen:
+                seen.append(copy.deepcopy(content));return bad
+            seen.append(copy.deepcopy(content));return good
+        def call(action,proposal):
+            self.assertEqual(action,'set_plan')
+            if proposal is bad:raise ValueError('短片不应机械拆为多个生成单元')
+            pipeline.film_audio.validate(proposal)
+        with patch.object(pipeline.planner,'chat',side_effect=model), \
+                patch.object(pipeline.film_audio,'library',return_value={}):
+            pipeline.make_plan(job,root,call)
+        correction=seen[1][-1]['text']
+        self.assertIn('机械拆',correction)
+        self.assertIn('配乐库为空',correction)
+        self.assertEqual(len(seen),2)
+
+    def test_no_image_input_never_asks_for_optional_upload(self):
+        from app import subject_spec
+        job,root=self.job(reference=True)
+        job.pop('subject_spec',None)
+        with patch.object(subject_spec.planner,'chat') as model:
+            result=subject_spec.analyze(job,root)
+        model.assert_not_called()
+        self.assertEqual(result['assets'],[])
+        self.assertEqual(result['question'],'')
+
+    def test_review_interval_allows_only_endpoint_rounding(self):
+        from app.unit_review import bounded_range
+        duration=12.028005
+        original={'start':0,'end':12.03}
+        self.assertEqual(bounded_range(original,duration)['end'],duration)
+        self.assertEqual(original['end'],12.03)
+        for invalid in [{'start':0,'end':12.1},{'start':-0.1,'end':12},
+                        {'start':12.03,'end':12.03},{'start':0,'end':float('nan')}]:
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
+                bounded_range(invalid,duration)

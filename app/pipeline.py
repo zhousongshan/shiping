@@ -50,13 +50,15 @@ def make_plan(job, root, call):
     mapping=subject_mapping.resolve(job,root)
     if mapping and mapping['status']=='needs_input':
         call('ask',{'question':mapping['question']});return
+    music=film_audio.options() if creative_brief.enabled(job) else []
     content=[{'type':'text','text':json.dumps({
         'goal':job.get('effective_prompt',job['prompt']), 'feedback':job.get('feedback'),
         'target_seconds':job.get('duration'), 'duration_mode':job.get('duration_mode'),
         'ratio':job['ratio'], 'subjects':job['subject_spec'],
         'reference':job.get('reference_analysis'),
         'subject_mapping':mapping,'creative_brief':job.get('creative_brief'),
-        'available_music':film_audio.options() if creative_brief.enabled(job) else [],
+        'available_music':music,'allowed_audio_modes':['original','silent','library'] if music else ['original','silent'],
+        'audio_execution_note':'没有配乐库时，轻快音乐由视频生成请求表达，audio_plan选original；不能选择library或虚构music_id。' if not music else 'library只能选提供的真实music_id。',
     },ensure_ascii=False)}]
     for attempt in range(2):
         proposal=planner.chat(PLAN_PROMPT_V4 if creative_brief.enabled(job) else PLAN_PROMPT,content)
@@ -66,10 +68,15 @@ def make_plan(job, root, call):
             call('set_plan',proposal)
             return
         except (ValueError,KeyError,TypeError) as exc:
+            detail=str(exc)[:300]
+            if creative_brief.enabled(job) and isinstance(proposal,dict):
+                try:film_audio.validate(dict(proposal))
+                except ValueError as audio_error:
+                    if str(audio_error) not in detail:detail+='；声音方案：'+str(audio_error)
             artifact(root,'planning-failures',{'attempt':attempt+1,'proposal':proposal,
-                'error_type':type(exc).__name__,'error':str(exc)[:600],'source_version':config.SOURCE_VERSION})
-            if attempt:raise ValueError('制作方案两次未通过校验：'+str(exc)[:300]) from exc
-            content.append({'type':'text','text':'修正以下校验错误：'+str(exc)[:600]+'；上次方案：'+json.dumps(proposal,ensure_ascii=False)})
+                'error_type':type(exc).__name__,'error':detail[:600],'source_version':config.SOURCE_VERSION})
+            if attempt:raise ValueError('制作方案两次未通过校验：'+detail[:500]) from exc
+            content.append({'type':'text','text':'修正以下校验错误：'+detail[:600]+'；上次方案：'+json.dumps(proposal,ensure_ascii=False)})
 
 
 def run(job, stop):

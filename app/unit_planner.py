@@ -68,6 +68,8 @@ def validate(job, root, plan):
             raise ValueError('每单元必须描述实际事件与动作，不只写一句保持一致')
         if creative_brief.enabled(job):
             ids_for_unit=u.get('requirement_ids')
+            if isinstance(ids_for_unit,list):
+                ids_for_unit=[str(i) if type(i) is int else i for i in ids_for_unit];u['requirement_ids']=ids_for_unit
             if not isinstance(ids_for_unit,list) or any(r not in required for r in ids_for_unit):
                 raise ValueError('每段requirement_ids必须来自统一创作要求')
             covered_requirements.update(ids_for_unit)

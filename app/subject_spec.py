@@ -16,6 +16,14 @@ def analyze(job, root):
     source_version = fingerprint({'inputs': inputs, 'goal': job.get('effective_prompt', job['prompt']), 'feedback': job.get('feedback'), 'mode': mode, 'policy_version': SUBJECT_POLICY_VERSION})
     if job.get('subject_spec', {}).get('source_version') == source_version:
         return job['subject_spec']
+    if not inputs:
+        # No uploaded image means there is no image-role ambiguity to resolve.
+        # Reference video understanding belongs to the next stage, not a request
+        # that employees upload an optional image before they may continue.
+        result=artifact(root,'subjects',{'assets':[],'replacement_rules':[],'uncertainties':[],
+            'question':'','source_version':source_version,'inputs':[]})
+        store.update(job['id'],subject_spec=result)
+        return result
     content = [{'type': 'text', 'text': json.dumps({'goal': job.get('effective_prompt', job['prompt']), 'feedback': job.get('feedback'), 'mode': mode, 'inputs': inputs}, ensure_ascii=False)}]
     for item in inputs:
         content += [{'type': 'text', 'text': item['path']}, planner.image_content(root/item['path'])]

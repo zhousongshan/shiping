@@ -5,6 +5,15 @@ from .production_schema import artifact, context_version, file_hash, judge, numb
 from .unit_planner import unit
 from . import review_policy, structured, creative_brief
 
+def bounded_range(region, duration):
+    """Accept a two-decimal rounded endpoint, never a materially longer interval."""
+    start,end=number(region['start']),number(region['end'])
+    if duration < end <= duration + .005 + 1e-9:
+        end=duration
+    if not 0 <= start < end <= duration:
+        raise ValueError(f'审片疑点区间越界，须满足0 <= start < end <= {duration:.6f}秒')
+    return {**region,'start':start,'end':end}
+
 def review(job, root, args):
     from .agent_tools import safe, inspect_video, digest, record_generated
     spec = unit(job, args['unit_id'])
@@ -75,7 +84,7 @@ def review(job, root, args):
             content += [{'type': 'text', 'text': f'对应原参考片段 {t} 秒，仅对照动作和事件'}, planner.image_content(frame)]
     instruction = '独立检查真实生成片段。输出JSON：verdict(pass/fail/warn)、checks（每项category、requirement、status、evidence实际时间和事实，至少包含identity/events/continuity/audio四个category）、issues数组、summary、end_state、end_frame_second、suspect_ranges数组（start/end为片段内秒数）。完整主体替换不能保留原玩偶脸或只是换装。事件必须按对应参考与需求发生。主体、事件、动作、声音分别判断；有明确错误fail，看不清warn，不能单凭流畅或最后画面正确判pass。无音轨或首镜无前镜应明确说明不适用。结束帧只能从已观察且清晰的真实帧选择。'
     if creative_brief.enabled(job):
-        instruction+=' 以creative_brief与本unit为验收标准，style/adapt不要求复刻未采用参考事件；只在replacement_required时检查替换。audio_plan.mode=library时片段无需已有背景配乐，全片合成后再验收配乐；片段仍需检查要求的对白与音效。silent模式会在后期移除全部音轨，片段有声本身不算失败，最终成片必须无声。每项check增加requirement_ids数组，列出实际检查的制作要求ID，合计覆盖本unit.requirement_ids。'
+        instruction+=' 以creative_brief与本unit为验收标准，style/adapt不要求复刻未采用参考事件；只在replacement_required时检查替换。audio_plan.mode=library时片段无需已有背景配乐，全片合成后再验收配乐；片段仍需检查要求的对白与音效。silent模式会在后期移除全部音轨，片段有声本身不算失败，最终成片必须无声。每项check增加requirement_ids数组，列出实际检查的制作要求ID，合计覆盖本unit.requirement_ids。不能把unit.id如u1填入requirement_ids；额外技术或衔接检查无对应用户要求时填[]。'
     needs_identity=any(spec['id'] in u.get('identity_depends_on',[]) for u in job['plan']['units'])
     if needs_identity:
         instruction+=' 本段将作为后续跨场景主体基准。额外返回identity_frame_second与identity_state：从已观察的实际帧中选主体清晰完整、特征可辨的时间，描述其外观；不必在片尾。不能找到明确身份帧则warn，不虚构画面。'
@@ -87,8 +96,7 @@ def review(job, root, args):
             raise ValueError('审片需要issues数组和summary文字')
         regions=result.get('suspect_ranges',[])
         if not isinstance(regions,list):raise ValueError('疑点区间须为数组')
-        for r in regions:
-            if not 0<=number(r['start'])<number(r['end'])<=duration:raise ValueError('审片疑点区间越界')
+        result['suspect_ranges']=[bounded_range(r,duration) for r in regions]
         if verdict=='pass':
             at=number(result.get('end_frame_second',-1))
             if not 0<=at<duration or duration-at>.6 or not result.get('end_state'):
